@@ -5,17 +5,32 @@ progmise Express backend services.
 
 ## Architecture
 
+Hexagonal (ports & adapters), mirroring `java-maven-api-template` but with
+idiomatic JS (functions + duck-typed ports, no class ceremony):
+
 ```
-src/index.js    Express app — routes, middleware, env config. No build step.
+src/
+  index.js                  composition root — env → adapters → usecases → app
+  app.js                    express wiring — middleware + routers
+  config/env.js             every process.env read lives here
+  domain/                   pure rules, zero framework/fetch imports
+  application/
+    ports/output/           contracts as JSDoc typedefs (e.g. IdentityProvider)
+    usecases/               one factory per use case: (deps) => (input) => result
+  infrastructure/
+    adapters/input/rest/    routers + middleware — HTTP <-> use cases only
+    adapters/output/        implementations (githubIdentity, db clients, ...)
 ```
 
 Rules:
+- Dependencies point inward: routes never touch `fetch`/env; use cases never
+  import express; domain never imports anything.
 - Pure JSON API — never serve HTML/assets (that's `node-react-app-template`
   or a separate frontend repo). Unknown `/api/*` → JSON 404.
 - No secrets in responses or logs; `GITHUB_CLIENT_SECRET` stays server-side;
   the user token rides in an HttpOnly cookie.
-- Config via env vars only — `.env.example` documents each var (no values);
-  `PORT` is set by Vercel at runtime (default 8080).
+- Config via env vars only — read them in `config/env.js`, and document each
+  in `.env.example` (no values); `PORT` is set by Vercel at runtime.
 - `FRONTEND_URL` = the SPA origin when it is a separate service (OAuth
   redirect_uri + post-login redirect + CORS). Empty = same-origin.
 - `ALLOWED_USERS` (comma-separated logins) gates sign-in; empty = open to
