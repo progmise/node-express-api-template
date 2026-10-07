@@ -1,109 +1,23 @@
-import express from 'express';
+// Composition root — the only file that knows how the layers connect:
+// env config → output adapters → use cases → REST adapters → app.
 import { createRequire } from 'node:module';
+import { env } from './config/env.js';
+import { githubIdentity } from './infrastructure/adapters/output/githubIdentity.js';
+import { resolveSession } from './application/usecases/resolveSession.js';
+import { exchangeOAuthCode } from './application/usecases/exchangeOAuthCode.js';
+import { createApp } from './app.js';
 
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
 
-const app = express();
-const PORT = process.env.PORT || 8080;
-const CLIENT_ID = process.env.GITHUB_CLIENT_ID || '';
-const CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET || '';
-const COOKIE = 'gh_token';
-// Comma-separated GitHub logins allowed to sign in. Empty = any GitHub user.
-const ALLOWED = new Set(
-  (process.env.ALLOWED_USERS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
-// Origin the SPA lives on, when it is a separate service. Used to build the
-// OAuth redirect_uri and to CORS the API for direct (non-proxied) calls.
-const FRONTEND_URL = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
-const CORS_ORIGIN = process.env.CORS_ORIGIN || FRONTEND_URL;
-
-const baseUrl = (req) =>
-  `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers['x-forwarded-host'] || req.headers.host}`;
-
-const readCookie = (req) =>
-  (req.headers.cookie || '').split(';').map((c) => c.trim())
-    .find((c) => c.startsWith(`${COOKIE}=`))?.split('=')[1];
-
-const ghFetch = (token, url, opts = {}) =>
-  fetch(url, {
-    ...opts,
-    headers: {
-      Accept: 'application/vnd.github+json',
-      ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...opts.headers,
-    },
-  });
-
-const allowed = (login) => !ALLOWED.size || ALLOWED.has(login.toLowerCase());
-
-app.use(express.json());
-
-// CORS only when an origin is configured — same-origin deployments (a proxy
-// serving /api/*) do not need it.
-if (CORS_ORIGIN) {
-  app.use((req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', CORS_ORIGIN);
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    if (req.method === 'OPTIONS') return res.sendStatus(204);
-    next();
-  });
-}
-
-// --- Example endpoints ------------------------------------------------------
-
-app.get('/api/ping', (_req, res) => res.json({ message: 'pong' }));
-app.get('/api/health', (_req, res) => res.json({ status: 'ok', version: pkg.version }));
-
-// --- Auth (GitHub OAuth — optional infra, works once GITHUB_CLIENT_* are set) --
-
-app.get('/api/auth/login', (req, res) => {
-  const redirect = `${FRONTEND_URL || baseUrl(req)}/api/auth/callback`;
-  res.redirect(
-    `https://github.com/login/oauth/authorize?client_id=${CLIENT_ID}` +
-    `&redirect_uri=${encodeURIComponent(redirect)}&scope=read:user`,
-  );
+const provider = githubIdentity({
+  clientId: env.githubClientId,
+  clientSecret: env.githubClientSecret,
 });
+const usecases = {
+  resolveSession: resolveSession({ provider, allowedUsers: env.allowedUsers }),
+  exchangeOAuthCode: exchangeOAuthCode({ provider, allowedUsers: env.allowedUsers }),
+};
 
-app.get('/api/auth/callback', async (req, res) => {
-  const r = await ghFetch(null, 'https://github.com/login/oauth/access_token', {
-    method: 'POST',
-    body: JSON.stringify({
-      client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET,
-      code: req.query.code,
-    }),
-  });
-  const data = await r.json();
-  if (!data.access_token) return res.status(401).send('OAuth failed');
-  if (ALLOWED.size) {
-    const u = await ghFetch(data.access_token, 'https://api.github.com/user');
-    const user = u.ok ? await u.json() : null;
-    if (!user || !allowed(user.login))
-      return res.status(403).send('User not authorized');
-  }
-  res.setHeader('Set-Cookie',
-    `${COOKIE}=${data.access_token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=28800`);
-  res.redirect(`${FRONTEND_URL}/`);
-});
-
-app.get('/api/logout', (req, res) => {
-  res.setHeader('Set-Cookie', `${COOKIE}=; HttpOnly; Path=/; Max-Age=0`);
-  res.redirect(`${FRONTEND_URL || '/'}`);
-});
-
-app.get('/api/me', async (req, res) => {
-  const token = readCookie(req);
-  if (!token) return res.status(401).json({ error: 'not authenticated' });
-  const r = await ghFetch(token, 'https://api.github.com/user');
-  if (!r.ok) return res.status(401).json({ error: 'bad token' });
-  const u = await r.json();
-  if (!allowed(u.login)) return res.status(403).json({ error: 'not authorized' });
-  res.json({ login: u.login, avatar_url: u.avatar_url });
-});
-
-// Unknown API routes return JSON 404, never an HTML fallback.
-app.use('/api', (_req, res) => res.status(404).json({ error: 'not found' }));
-
-app.listen(PORT, () => console.log(`${pkg.name}:${pkg.version} on :${PORT}`));
+createApp({ env, pkg, usecases })
+  .listen(env.port, () => console.log(`${pkg.name}:${pkg.version} on :${env.port}`));
