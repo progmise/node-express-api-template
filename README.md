@@ -52,7 +52,7 @@ Everything is **optional** — CI stays green with zero credentials:
   *Actions → Release*. Publishes `:<version>` + `:latest` to Docker Hub and
   creates the GitHub Release/tag. **Never deploys.**
 - **Deploy** (manual): deploy any released `version` to one env — or via the
-  `deploy-manifest` orchestrator.
+  app-model orchestrator.
 - **Integration** (on merge): CI + publishes `:<sha>` + `:edge`/`:latest`,
   deploys to non-pro envs.
 - **CI Checks** (on PR): `npm ci` + `npm run build` (syntax check) +
